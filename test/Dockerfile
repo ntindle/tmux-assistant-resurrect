@@ -20,11 +20,12 @@ RUN curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
 # Install real assistant CLIs (no mocks)
 # Pin major versions to prevent upstream breaking changes from failing CI.
-# codex is pre-1.0 (0.x), so pin to ~0 (any 0.x); claude-code is 2.x; opencode-ai is 1.x.
-RUN npm install -g "@anthropic-ai/claude-code@^2" "@openai/codex@^0" "opencode-ai@^1"
+# codex is pre-1.0 (0.x), so pin to ~0 (any 0.x); claude-code is 2.x; opencode-ai
+# and @github/copilot are 1.x.
+RUN npm install -g "@anthropic-ai/claude-code@^2" "@openai/codex@^0" "opencode-ai@^1" "@github/copilot@^1"
 
 # Verify the binaries exist
-RUN which claude && which codex && which opencode
+RUN which claude && which codex && which opencode && which copilot
 
 # Create a test user (avoid running as root — tmux behaves differently)
 RUN useradd -m -s /bin/bash testuser

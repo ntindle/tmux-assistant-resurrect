@@ -12,8 +12,9 @@ Persist and restore AI coding assistant sessions across tmux restarts and reboot
 
 When your computer shuts down, tmux sessions are lost -- including any running
 [Claude Code](https://github.com/anthropics/claude-code),
-[OpenCode](https://github.com/opencode-ai/opencode), or
-[Codex CLI](https://github.com/openai/codex) instances. This project hooks into
+[OpenCode](https://github.com/opencode-ai/opencode),
+[Codex CLI](https://github.com/openai/codex), or
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) instances. This project hooks into
 [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) to
 automatically save assistant session IDs, CLI flags, and environment variables,
 then re-launch them with the exact same configuration after a restore.
@@ -24,7 +25,7 @@ then re-launch them with the exact same configuration after a restore.
 SAVE (every 5 min + manual prefix+Ctrl-s)
   tmux-resurrect saves pane layouts
     -> post-save hook inspects child processes of each pane
-    -> detects assistants by binary name (claude, opencode, codex)
+    -> detects assistants by binary name (claude, opencode, codex, copilot)
     -> extracts session IDs via native hooks/plugins/process args
     -> writes ~/.tmux/resurrect/assistant-sessions.json
 
@@ -35,14 +36,15 @@ RESTORE (on tmux start or manual prefix+Ctrl-r)
     -> sends resume commands to each pane, e.g.:
          ANTHROPIC_BASE_URL='...' claude --dangerously-skip-permissions --resume <id>
          opencode --verbose -s <session-id>
-         codex --full-auto resume <session-id>
+          codex --full-auto resume <session-id>
+          copilot --resume <session-id>
 ```
 
 ## Design
 
 Detection is done via direct process inspection: the save script takes a
 single `ps` snapshot of all processes, finds children of each tmux pane shell,
-and matches known assistant binary names (`claude`, `opencode`, `codex`).
+and matches known assistant binary names (`claude`, `opencode`, `codex`, `copilot`).
 
 Session ID extraction uses tool-native mechanisms (infrastructure plumbing):
 
@@ -51,6 +53,7 @@ Session ID extraction uses tool-native mechanisms (infrastructure plumbing):
 | **Claude Code** | `SessionStart` hook state file (keyed by Claude PID) | `--resume` in process args | - | Claude overwrites its process title, so args fallback only works if args are visible |
 | **OpenCode** | `-s` / `--session` in process args | Plugin state file | SQLite DB query (`~/.local/share/opencode/opencode.db`) | Go binary overwrites process title; DB fallback matches most recent session by cwd |
 | **Codex CLI** | PID lookup in `~/.codex/session-tags.jsonl` | `resume` in process args | - | Codex runs via Node.js, so args are always visible in `ps` |
+| **GitHub Copilot CLI** | `--resume` in process args | `~/.copilot/session-state/*/workspace.yaml` | - | Workspace metadata fallback matches the most likely session by cwd and timestamps |
 
 Each tool has a primary and fallback extraction method. Fallbacks address the
 chicken-and-egg problem: after a restore, session IDs are in process args even
@@ -62,7 +65,7 @@ version-resilient session ID extraction even when the plugin hasn't fired.
 - [tmux](https://github.com/tmux/tmux) (tested with 3.x)
 - [TPM](https://github.com/tmux-plugins/tpm) (Tmux Plugin Manager)
 - [jq](https://jqlang.github.io/jq/) (used by save/restore scripts)
-- At least one of: Claude Code, OpenCode, Codex CLI
+- At least one of: Claude Code, OpenCode, Codex CLI, GitHub Copilot CLI
 
 ## Installation
 
@@ -151,7 +154,7 @@ just test
 ```
 
 This builds a Docker image with tmux, jq, just, and the real
-`@anthropic-ai/claude-code`, `opencode-ai`, and `@openai/codex` npm packages,
+`@anthropic-ai/claude-code`, `opencode-ai`, `@openai/codex`, and `@github/copilot` npm packages,
 then runs the full test suite covering install, save, restore, uninstall, hooks,
 cleanup, TPM plugin installation, session ID extraction, POSIX quoting, process
 tree detection, upgrade-path migration, and regression scenarios. No API keys are needed — the tests exercise

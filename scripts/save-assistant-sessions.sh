@@ -36,6 +36,7 @@ log() {
 }
 
 USED_CODEX_SESSION_IDS=""
+USED_COPILOT_SESSION_IDS=""
 
 # --- Session ID extraction ---
 
@@ -247,6 +248,113 @@ PY
 	fi
 }
 
+get_copilot_session() {
+	local child_pid="$1"
+	local args="$2"
+	local cwd="${3:-}"
+
+	# Method 1: --resume flag in process args (after restore or explicit resume).
+	# Supports both `--resume <id>` and `--resume=<id>` forms.
+	local sid
+	sid=$(echo "$args" | sed -n "s/.*--resume[= ] *\([A-Za-z0-9_-]*\).*/\1/p")
+	if [ -n "$sid" ]; then
+		echo "$sid"
+		return
+	fi
+
+	# Method 2: workspace metadata under ~/.copilot/session-state/<session>/workspace.yaml.
+	# Copilot persists per-session workspace metadata including the session ID,
+	# cwd, and timestamps. Match by cwd and rank by proximity to process start.
+	local sessions_root="${HOME}/.copilot/session-state"
+	if [ -n "$cwd" ] && [ -d "$sessions_root" ] && command -v python3 >/dev/null 2>&1; then
+		local etimes
+		etimes=$(ps -o etimes= -p "$child_pid" 2>/dev/null | tr -d ' ' || true)
+		sid=$(USED_COPILOT_SESSION_IDS="$USED_COPILOT_SESSION_IDS" python3 - "$sessions_root" "$cwd" "$etimes" <<'PY'
+import datetime, os, sys, time
+
+sessions_root = sys.argv[1]
+cwd = sys.argv[2]
+etimes_raw = sys.argv[3].strip()
+used = {sid for sid in os.environ.get("USED_COPILOT_SESSION_IDS", "").split("\t") if sid}
+
+process_start = None
+if etimes_raw.isdigit():
+    process_start = time.time() - int(etimes_raw)
+
+def parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+def parse_workspace(path):
+    data = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                key = key.strip()
+                value = value.strip()
+                if value[:1] == value[-1:] and value[:1] in {"'", '"'}:
+                    value = value[1:-1]
+                data[key] = value
+    except Exception:
+        return {}
+    return data
+
+candidates = []
+for entry in os.scandir(sessions_root):
+    if not entry.is_dir():
+        continue
+    workspace = os.path.join(entry.path, "workspace.yaml")
+    if not os.path.isfile(workspace):
+        continue
+    data = parse_workspace(workspace)
+    if data.get("cwd") != cwd:
+        continue
+    sid = data.get("id") or entry.name
+    if not sid:
+        continue
+    session_start = parse_ts(data.get("created_at"))
+    updated_at = parse_ts(data.get("updated_at"))
+    candidates.append((sid, session_start, updated_at, os.path.getmtime(workspace)))
+
+if not candidates:
+    sys.exit(0)
+
+def score(item):
+    sid, session_start, updated_at, mtime = item
+    reused = sid in used
+    best_ts = updated_at if updated_at is not None else mtime
+    if process_start is None or session_start is None:
+        prior = 0
+        distance = float("inf")
+    else:
+        prior = 1 if session_start <= process_start + 120 else 0
+        distance = abs(process_start - session_start)
+    return (
+        0 if reused else 1,
+        prior,
+        -distance,
+        best_ts,
+    )
+
+best = max(candidates, key=score)
+print(best[0])
+PY
+)
+		if [ -n "$sid" ]; then
+			echo "$sid"
+			return
+		fi
+	fi
+}
+
 register_codex_session_id() {
 	local sid="$1"
 	[ -z "$sid" ] && return
@@ -254,6 +362,17 @@ register_codex_session_id() {
 	*"$sid"*) ;;
 	*)
 		USED_CODEX_SESSION_IDS="${USED_CODEX_SESSION_IDS}"$'\t'"$sid"
+		;;
+	esac
+}
+
+register_copilot_session_id() {
+	local sid="$1"
+	[ -z "$sid" ] && return
+	case "$USED_COPILOT_SESSION_IDS" in
+	*"$sid"*) ;;
+	*)
+		USED_COPILOT_SESSION_IDS="${USED_COPILOT_SESSION_IDS}"$'\t'"$sid"
 		;;
 	esac
 }
@@ -270,6 +389,7 @@ register_codex_session_id() {
 #   claude:   --resume <id>, --resume=<id>
 #   opencode: -s <id>, --session <id>, --session=<id>
 #   codex:    resume <id> (positional subcommand)
+#   copilot:  --resume[= ]<id>, bare --resume, --continue
 extract_cli_args() {
 	local tool="$1" raw_args="$2"
 
@@ -307,6 +427,10 @@ extract_cli_args() {
 	codex)
 		# resume <id> (positional)
 		args=$(echo "$args" | sed -E 's/resume  *[^ ]*//')
+		;;
+	copilot)
+		# --resume[=<id>] / --resume <id> / bare --resume / --continue
+		args=$(echo "$args" | sed -E 's/--resume([= ] *[^ ]*)?//; s/--continue//')
 		;;
 	esac
 
@@ -464,6 +588,7 @@ emit_session() {
 	claude) session_id=$(get_claude_session "$cpid" "$cargs") ;;
 	opencode) session_id=$(get_opencode_session "$cpid" "$cargs" "$cwd" "$allow_opencode_db") ;;
 	codex) session_id=$(get_codex_session "$cpid" "$cargs" "$cwd") ;;
+	copilot) session_id=$(get_copilot_session "$cpid" "$cargs" "$cwd") ;;
 	esac
 
 	if [ -n "$session_id" ]; then
@@ -500,6 +625,8 @@ emit_session() {
 			'{pane: $pane, tool: $tool, session_id: $sid, cwd: $cwd, pid: $pid, model: $model, cli_args: $cli_args, env: $env}' >>"$PARTS_FILE"
 		if [ "$tool" = "codex" ]; then
 			register_codex_session_id "$session_id"
+		elif [ "$tool" = "copilot" ]; then
+			register_copilot_session_id "$session_id"
 		fi
 		return 0
 	else
