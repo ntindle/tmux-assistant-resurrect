@@ -1,9 +1,6 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV SSL_CERT_FILE=/etc/ssl/cert.pem
-ENV CURL_CA_BUNDLE=/etc/ssl/cert.pem
-ENV GIT_SSL_CAINFO=/etc/ssl/cert.pem
 
 # Core tools
 RUN apt-get update && apt-get install -y \
@@ -20,6 +17,10 @@ RUN apt-get update && apt-get install -y \
     && update-ca-certificates \
     && chmod 755 /etc/ssl /etc/ssl/certs \
     && rm -rf /var/lib/apt/lists/*
+
+ENV SSL_CERT_FILE=/etc/ssl/cert.pem
+ENV CURL_CA_BUNDLE=/etc/ssl/cert.pem
+ENV GIT_SSL_CAINFO=/etc/ssl/cert.pem
 
 # Install just from a pinned GitHub release.
 # The install.sh helper has proven unreliable in CI/test images because failures
