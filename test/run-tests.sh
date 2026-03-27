@@ -260,6 +260,7 @@ echo ""
 tmux new-session -d -s test-claude -c /tmp
 tmux new-session -d -s test-opencode -c /tmp
 tmux new-session -d -s test-codex -c /tmp
+tmux new-session -d -s test-copilot -c /tmp
 tmux new-session -d -s test-opencode-nosid -c /tmp
 tmux new-session -d -s test-lsp -c /tmp
 
@@ -271,6 +272,8 @@ tmux send-keys -t test-claude "claude --resume ses_claude_test_123" Enter
 tmux send-keys -t test-opencode "opencode -s ses_opencode_test_456" Enter
 # Codex: bare process (session ID comes from session-tags.jsonl)
 tmux send-keys -t test-codex "codex resume ses_codex_test_789" Enter
+# Copilot: resume flag keeps the session ID in args
+tmux send-keys -t test-copilot "copilot --resume 0cb916db-26aa-40f2-86b5-1ba81b225fd2" Enter
 # OpenCode without -s flag (no session ID available — should log warning)
 tmux send-keys -t test-opencode-nosid "opencode" Enter
 # OpenCode LSP subprocess (should be excluded from detection)
@@ -281,11 +284,13 @@ tmux send-keys -t test-lsp "opencode run pyright-langserver.js" Enter
 claude_pane_shell_pid=$(tmux display-message -t test-claude -p '#{pane_pid}')
 opencode_pane_shell_pid=$(tmux display-message -t test-opencode -p '#{pane_pid}')
 codex_pane_shell_pid=$(tmux display-message -t test-codex -p '#{pane_pid}')
+copilot_pane_shell_pid=$(tmux display-message -t test-copilot -p '#{pane_pid}')
 nosid_pane_shell_pid=$(tmux display-message -t test-opencode-nosid -p '#{pane_pid}')
 
 wait_for_child "$claude_pane_shell_pid" "claude" 10 >/dev/null || echo "WARN: claude child not found (may still work via tree walk)"
 wait_for_child "$opencode_pane_shell_pid" "opencode" 10 >/dev/null || echo "WARN: opencode child not found"
 wait_for_child "$codex_pane_shell_pid" "codex" 10 >/dev/null || echo "WARN: codex child not found"
+wait_for_child "$copilot_pane_shell_pid" "copilot" 10 >/dev/null || echo "WARN: copilot child not found"
 wait_for_child "$nosid_pane_shell_pid" "opencode" 10 >/dev/null || echo "WARN: opencode-nosid child not found"
 
 # Create a Claude hook state file keyed by the Claude child PID
@@ -329,13 +334,13 @@ SAVED="$HOME/.tmux/resurrect/assistant-sessions.json"
 assert_file_exists "assistant-sessions.json created" "$SAVED"
 
 session_count=$(jq '.sessions | length' "$SAVED")
-# We expect: claude (1) + opencode with -s (1) + codex (1) = 3 with session IDs
+# We expect: claude (1) + opencode with -s (1) + codex (1) + copilot (1) = 4 with session IDs
 # opencode-nosid detected but no session ID, so excluded from sessions array
 # lsp subprocess should be excluded entirely
-if [ "$session_count" -ge 3 ]; then
-	pass "Detected at least 3 assistant sessions (got $session_count)"
+if [ "$session_count" -ge 4 ]; then
+	pass "Detected at least 4 assistant sessions (got $session_count)"
 else
-	fail "Expected at least 3 sessions, got $session_count"
+	fail "Expected at least 4 sessions, got $session_count"
 fi
 
 # Verify Claude was detected with correct session ID
@@ -349,6 +354,10 @@ assert_eq "OpenCode session ID extracted from plugin state file" "ses_opencode_t
 # Verify Codex was detected with correct session ID (from session-tags.jsonl)
 codex_sid=$(jq -r '.sessions[] | select(.tool == "codex") | .session_id' "$SAVED")
 assert_eq "Codex session ID extracted from session-tags.jsonl" "ses_codex_test_789" "$codex_sid"
+
+# Verify Copilot was detected with correct session ID (from --resume args)
+copilot_sid=$(jq -r '.sessions[] | select(.tool == "copilot") | .session_id' "$SAVED")
+assert_eq "Copilot session ID extracted from --resume args" "0cb916db-26aa-40f2-86b5-1ba81b225fd2" "$copilot_sid"
 
 # Verify LSP subprocess was excluded
 lsp_count=$(jq '[.sessions[] | select(.pane | contains("test-lsp"))] | length' "$SAVED")
@@ -404,7 +413,7 @@ echo "=== Test 3: restore (resume commands) ==="
 echo ""
 
 # Kill all assistants first (so panes are empty shells)
-for sess in test-claude test-opencode test-codex test-opencode-nosid test-lsp; do
+for sess in test-claude test-opencode test-codex test-copilot test-opencode-nosid test-lsp; do
 	kill_pane_children "$sess"
 done
 sleep 1
@@ -423,17 +432,20 @@ restore_log_content=$(cat "$RESTORE_LOG")
 assert_contains "Restore log mentions claude" "$restore_log_content" "restoring claude"
 assert_contains "Restore log mentions opencode" "$restore_log_content" "restoring opencode"
 assert_contains "Restore log mentions codex" "$restore_log_content" "restoring codex"
+assert_contains "Restore log mentions copilot" "$restore_log_content" "restoring copilot"
 
 # Verify the restore log contains the correct resume commands
 # (pane content is unreliable — real CLIs take over the terminal and clear it)
 assert_contains "Restore sent claude --resume" "$restore_log_content" "ses_claude_test_123"
 assert_contains "Restore sent opencode -s" "$restore_log_content" "ses_opencode_test_456"
 assert_contains "Restore sent codex resume" "$restore_log_content" "ses_codex_test_789"
+assert_contains "Restore sent copilot --resume" "$restore_log_content" "0cb916db-26aa-40f2-86b5-1ba81b225fd2"
 
 # Verify restore uses 'command' prefix to bypass shell aliases
 assert_contains "Restore uses 'command claude' prefix" "$restore_log_content" "command claude"
 assert_contains "Restore uses 'command opencode' prefix" "$restore_log_content" "command opencode"
 assert_contains "Restore uses 'command codex' prefix" "$restore_log_content" "command codex"
+assert_contains "Restore uses 'command copilot' prefix" "$restore_log_content" "command copilot"
 
 # --- Test 3b: Restore skips panes with already-running assistants ---
 
@@ -468,7 +480,7 @@ echo "=== Test 3b2: restore Guard 2 — skips panes with background assistant ==
 echo ""
 
 # Kill existing assistants so panes return to shells
-for sess in test-claude test-opencode test-codex test-opencode-nosid test-lsp; do
+for sess in test-claude test-opencode test-codex test-copilot test-opencode-nosid test-lsp; do
 	kill_pane_children "$sess"
 done
 sleep 1
@@ -517,7 +529,7 @@ echo "=== Test 3c: restore handles tricky cwd values ==="
 echo ""
 
 # Kill assistants so panes are clean shells
-for sess in test-claude test-opencode test-codex test-opencode-nosid test-lsp; do
+for sess in test-claude test-opencode test-codex test-copilot test-opencode-nosid test-lsp; do
 	kill_pane_children "$sess"
 done
 sleep 1
@@ -575,7 +587,7 @@ echo ""
 bash "$REPO_DIR/tmux-assistant-resurrect.tmux"
 
 resurrect_procs=$(tmux show-option -gv @resurrect-processes 2>/dev/null || echo "")
-if echo "$resurrect_procs" | grep -qiE "claude|opencode|codex"; then
+if echo "$resurrect_procs" | grep -qiE "claude|opencode|codex|copilot"; then
 	fail "@resurrect-processes still contains assistants (double-launch risk!)"
 else
 	pass "@resurrect-processes does not include assistants"
@@ -946,6 +958,52 @@ assert_eq "Codex resume extraction" "ses_codex_789" "$(get_codex_session 99999 "
 assert_eq "Codex resume with path" "ses_codex_789" "$(get_codex_session 99999 "/usr/bin/codex resume ses_codex_789")"
 assert_eq "Codex bare (no resume)" "" "$(get_codex_session 99999 "codex")"
 
+# --- Copilot: --resume arg fallback + workspace metadata fallback ---
+assert_eq "Copilot --resume extraction" "ses_cp_789" "$(get_copilot_session 99999 "copilot --resume ses_cp_789" "/tmp")"
+assert_eq "Copilot --resume with path" "ses_cp_789" "$(get_copilot_session 99999 "/usr/bin/copilot --resume ses_cp_789" "/tmp")"
+assert_eq "Copilot bare (no resume, no workspace)" "" "$(get_copilot_session 99999 "copilot" "/nonexistent")"
+
+COPILOT_HOME=$(mktemp -d)
+mkdir -p "$COPILOT_HOME/.copilot/session-state/ses_copilot_alpha"
+cat >"$COPILOT_HOME/.copilot/session-state/ses_copilot_alpha/workspace.yaml" <<'COPEOF'
+id: ses_copilot_alpha
+cwd: /tmp/copilot-project
+created_at: 2026-03-24T10:00:00.000Z
+updated_at: 2026-03-24T10:05:00.000Z
+COPEOF
+
+ORIG_HOME="$HOME"
+HOME="$COPILOT_HOME"
+
+copilot_workspace_sid=$(get_copilot_session $$ "copilot" "/tmp/copilot-project")
+assert_eq "Copilot workspace metadata lookup by cwd" "ses_copilot_alpha" "$copilot_workspace_sid"
+
+copilot_workspace_miss=$(get_copilot_session $$ "copilot" "/tmp/other-project")
+assert_eq "Copilot workspace metadata no match for different cwd" "" "$copilot_workspace_miss"
+
+mkdir -p "$COPILOT_HOME/.copilot/session-state/ses_copilot_beta"
+cat >"$COPILOT_HOME/.copilot/session-state/ses_copilot_beta/workspace.yaml" <<'COPEOF'
+id: ses_copilot_beta
+cwd: /tmp/copilot-project
+created_at: 2026-03-24T10:01:00.000Z
+updated_at: 2026-03-24T10:06:00.000Z
+COPEOF
+
+USED_COPILOT_SESSION_IDS=""
+dedup_copilot_first=$(get_copilot_session $$ "copilot" "/tmp/copilot-project")
+if type register_copilot_session_id >/dev/null 2>&1; then
+	register_copilot_session_id "$dedup_copilot_first"
+fi
+dedup_copilot_second=$(get_copilot_session $$ "copilot" "/tmp/copilot-project")
+if [ -n "$dedup_copilot_first" ] && [ -n "$dedup_copilot_second" ] && [ "$dedup_copilot_first" != "$dedup_copilot_second" ]; then
+	pass "Copilot workspace dedup: two panes same cwd get distinct sessions"
+else
+	fail "Copilot workspace dedup: expected distinct sessions, got '$dedup_copilot_first' and '$dedup_copilot_second'"
+fi
+
+HOME="$ORIG_HOME"
+rm -rf "$COPILOT_HOME"
+
 # --- Codex: rollout session files (Method 3) ---
 # Newer Codex versions write session metadata to ~/.codex/sessions/*/*.jsonl
 # instead of session-tags.jsonl. Test that get_codex_session can find them.
@@ -1301,16 +1359,19 @@ source "$REPO_DIR/scripts/lib-detect.sh"
 assert_eq "detect bare 'claude'" "claude" "$(detect_tool "claude")"
 assert_eq "detect bare 'opencode'" "opencode" "$(detect_tool "opencode")"
 assert_eq "detect bare 'codex'" "codex" "$(detect_tool "codex")"
+assert_eq "detect bare 'copilot'" "copilot" "$(detect_tool "copilot")"
 
 # Bare names with arguments
 assert_eq "detect 'claude --resume ses_123'" "claude" "$(detect_tool "claude --resume ses_123")"
 assert_eq "detect 'opencode -s ses_456'" "opencode" "$(detect_tool "opencode -s ses_456")"
 assert_eq "detect 'codex resume ses_789'" "codex" "$(detect_tool "codex resume ses_789")"
+assert_eq "detect 'copilot --resume ses_000'" "copilot" "$(detect_tool "copilot --resume ses_000")"
 
 # Full paths (how they appear on macOS or via shebang)
 assert_eq "detect '/usr/local/bin/claude'" "claude" "$(detect_tool "/usr/local/bin/claude")"
 assert_eq "detect '/opt/homebrew/bin/opencode -s ses_456'" "opencode" "$(detect_tool "/opt/homebrew/bin/opencode -s ses_456")"
 assert_eq "detect '/bin/bash /usr/local/bin/opencode -s ses_456'" "opencode" "$(detect_tool "/bin/bash /usr/local/bin/opencode -s ses_456")"
+assert_eq "detect '/usr/local/bin/copilot --resume ses_000'" "copilot" "$(detect_tool "/usr/local/bin/copilot --resume ses_000")"
 
 # LSP subprocess exclusion
 assert_eq "exclude 'opencode run pyright'" "" "$(detect_tool "opencode run pyright-langserver.js")"
@@ -1819,6 +1880,18 @@ assert_eq "OpenCode strip --session" "--verbose" \
 # OpenCode: strip --session=<id> (equals form)
 assert_eq "OpenCode strip --session= (equals)" "--verbose" \
 	"$(extract_cli_args "opencode" "opencode --verbose --session=ses_abc")"
+
+# Copilot: strip --resume <id>
+assert_eq "Copilot strip --resume" "--model gpt-5" \
+	"$(extract_cli_args "copilot" "copilot --model gpt-5 --resume ses_abc")"
+
+# Copilot: strip bare --resume (session picker)
+assert_eq "Copilot strip bare --resume" "--model gpt-5" \
+	"$(extract_cli_args "copilot" "copilot --model gpt-5 --resume")"
+
+# Copilot: strip --continue
+assert_eq "Copilot strip --continue" "--model gpt-5" \
+	"$(extract_cli_args "copilot" "copilot --model gpt-5 --continue")"
 
 # Codex: strip resume <id> (positional subcommand)
 assert_eq "Codex strip resume" "--full-auto" \
