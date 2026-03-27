@@ -144,6 +144,13 @@ while read -r entry; do
 			resume_cmd="command codex resume ${safe_sid}"
 		fi
 		;;
+	copilot)
+		if [ -n "$cli_args" ]; then
+			resume_cmd="command copilot ${cli_args} --resume ${safe_sid}"
+		else
+			resume_cmd="command copilot --resume ${safe_sid}"
+		fi
+		;;
 	*)
 		log "unknown tool '$tool' for pane $pane, skipping"
 		continue
