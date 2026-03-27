@@ -62,7 +62,7 @@ get_claude_session() {
 	# Supports both `--resume <id>` and `--resume=<id>` forms.
 	# If the SessionStart hook hasn't fired yet, the ID is still in the args.
 	local sid
-	sid=$(echo "$args" | sed -n "s/.*--resume[= ] *\([A-Za-z0-9_-]*\).*/\1/p")
+	sid=$(echo "$args" | sed -nE "s/.*--resume(=| +) *([A-Za-z0-9_-]+).*/\2/p")
 	if [ -n "$sid" ]; then
 		echo "$sid"
 		return
@@ -256,7 +256,7 @@ get_copilot_session() {
 	# Method 1: --resume flag in process args (after restore or explicit resume).
 	# Supports both `--resume <id>` and `--resume=<id>` forms.
 	local sid
-	sid=$(echo "$args" | sed -n "s/.*--resume[= ] *\([A-Za-z0-9_-]*\).*/\1/p")
+	sid=$(echo "$args" | sed -nE "s/.*--resume(=| +) *([A-Za-z0-9_-]+).*/\2/p")
 	if [ -n "$sid" ]; then
 		echo "$sid"
 		return
@@ -430,7 +430,7 @@ extract_cli_args() {
 		;;
 	copilot)
 		# --resume[=<id>] / --resume <id> / bare --resume / --continue
-		args=$(echo "$args" | sed -E 's/--resume([= ] *[^ ]*)?//; s/--continue//')
+		args=$(echo "$args" | sed -E 's/--resume([= ]+[^ ]*)?//g; s/--continue//g')
 		;;
 	esac
 

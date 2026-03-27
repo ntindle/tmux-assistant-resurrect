@@ -337,10 +337,12 @@ session_count=$(jq '.sessions | length' "$SAVED")
 # We expect: claude (1) + opencode with -s (1) + codex (1) + copilot (1) = 4 with session IDs
 # opencode-nosid detected but no session ID, so excluded from sessions array
 # lsp subprocess should be excluded entirely
-if [ "$session_count" -ge 4 ]; then
-	pass "Detected at least 4 assistant sessions (got $session_count)"
+# Use exact equality here: this suite launches exactly four resumable assistants,
+# and a larger count would mean excluded panes were accidentally saved.
+if [ "$session_count" -eq 4 ]; then
+	pass "Detected 4 assistant sessions"
 else
-	fail "Expected at least 4 sessions, got $session_count"
+	fail "Expected 4 sessions, got $session_count"
 fi
 
 # Verify Claude was detected with correct session ID
@@ -991,9 +993,7 @@ COPEOF
 
 USED_COPILOT_SESSION_IDS=""
 dedup_copilot_first=$(get_copilot_session $$ "copilot" "/tmp/copilot-project")
-if type register_copilot_session_id >/dev/null 2>&1; then
-	register_copilot_session_id "$dedup_copilot_first"
-fi
+register_copilot_session_id "$dedup_copilot_first"
 dedup_copilot_second=$(get_copilot_session $$ "copilot" "/tmp/copilot-project")
 if [ -n "$dedup_copilot_first" ] && [ -n "$dedup_copilot_second" ] && [ "$dedup_copilot_first" != "$dedup_copilot_second" ]; then
 	pass "Copilot workspace dedup: two panes same cwd get distinct sessions"
